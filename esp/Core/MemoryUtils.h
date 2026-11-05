@@ -4,6 +4,7 @@
 #include <mach/mach.h>
 #include <sys/sysctl.h>
 #include <string>
+#include "DebugLogger.h"
 
 #pragma mark - Get PID
 
@@ -27,8 +28,23 @@ bool _read(long addr, void *buffer, int len);
 
 template<typename T> T ReadAddr(long address) {
     T data;
-    _read(address, reinterpret_cast<void *>(&data), sizeof(T));
+    if (!_read(address, reinterpret_cast<void *>(&data), sizeof(T))) {
+        // Keep silent at DEBUG here (hot path) — callers log stage-level failures.
+        // ESP_LOG_DEBUG(@"[READ] fail addr=0x%lx size=%zu", address, sizeof(T));
+    }
     return data;
 }
+
+// --- Task accessors (fix static-header linkage: header statics are per-TU copies) ---
+// GetGameModule_Base stores the task in MemoryUtils.cpp's TU copy; other TUs
+// must fetch it via these functions instead of reading `get_task` directly.
+#ifdef __cplusplus
+extern "C" {
+#endif
+task_t ESPGetTargetTask(void);
+pid_t ESPGetTargetPid(void);
+#ifdef __cplusplus
+}
+#endif
 
 #endif

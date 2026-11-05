@@ -1,0 +1,40 @@
+name: Build TIPA (Theos)
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Theos
+        run: |
+          set -e
+          git clone --recursive https://github.com/theos/theos.git Theos
+          ls Theos/sdks/ | head -20
+          xcode-select --install || true
+        env:
+          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+
+      - name: Build .tipa
+        run: |
+          set -e
+          export THEOS="$GITHUB_WORKSPACE/Theos"
+          make clean package -j$(sysctl -n hw.ncpu)
+          ls -lh packages/
+        env:
+          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TrollSpeed-tipa
+          path: packages/*.tipa
+          if-no-files-found: error

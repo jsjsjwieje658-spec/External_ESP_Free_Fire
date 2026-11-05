@@ -1,0 +1,174 @@
+#import "OffsetScanner.h"
+#import "DebugLogger.h"
+#import "MemoryUtils.h"
+#import "GameLogic.h"
+#import "AOBScanner.h"
+#include <mach/mach.h>
+#include <initializer_list>
+#include <math.h>
+
+// --- small helpers (forward decls from GameLogic.h) ---
+// getMatch / CameraMain / getLocalPlayer / GetViewMatrix are already declared there.
+
+static bool ESPIsPlausibleObject(uint64_t ptr) {
+    return isVaildPtr((long)ptr);
+}
+
+static bool ESPMatrixLooksValid(float *m) {
+    if (!m) return false;
+    // View-projection matrix: all finite, last row not all zero, |m[15]| sane.
+    for (int i = 0; i < 16; i++) {
+        if (isnan(m[i]) || isinf(m[i])) return false;
+    }
+    if (fabsf(m[15]) < 0.001f) return false; // w row should be ~1 for perspective
+    return true;
+}
+
+extern "C" ESPChainSnapshot ESPProbeChain(uint64_t moduleBase, uint64_t globalRVA) {
+    ESPChainSnapshot s{}; s.moduleBase = moduleBase;
+    ESP_LOG_INFO(@"[PROBE] start moduleBase=0x%llx globalRVA=0x%llx",
+        (unsigned long long)moduleBase, (unsigned long long)globalRVA);
+    auto T0 = ESPScopedTimerBegin("ESPProbeChain", YES);
+
+    s.typeInfo = ReadAddr<uint64_t>(moduleBase + globalRVA);
+    ESP_LOG_DEBUG(@"[PROBE] TypeInfo @0x%llx = 0x%llx valid=%d",
+        (unsigned long long)(moduleBase+globalRVA), (unsigned long long)s.typeInfo,
+        ESPIsPlausibleObject(s.typeInfo));
+    if (!ESPIsPlausibleObject(s.typeInfo)) { ESP_LOG_ERROR(@"[PROBE] FAIL stage=TypeInfo"); goto done; }
+
+    s.staticBlock = ReadAddr<uint64_t>(s.typeInfo + 0xB8);
+    ESP_LOG_DEBUG(@"[PROBE] StaticBlock @TypeInfo+0xB8 = 0x%llx valid=%d",
+        (unsigned long long)s.staticBlock, ESPIsPlausibleObject(s.staticBlock));
+    if (!ESPIsPlausibleObject(s.staticBlock)) { ESP_LOG_ERROR(@"[PROBE] FAIL stage=StaticBlock"); goto done; }
+
+    s.matchGame = ReadAddr<uint64_t>(s.staticBlock + 0x8); // CurrentMatchGame (was +0x0 pre-1.132)
+    ESP_LOG_DEBUG(@"[PROBE] MatchGame @Static+0x8 = 0x%llx valid=%d",
+        (unsigned long long)s.matchGame, ESPIsPlausibleObject(s.matchGame));
+    if (!ESPIsPlausibleObject(s.matchGame)) { ESP_LOG_ERROR(@"[PROBE] FAIL stage=MatchGame"); goto done; }
+
+    s.match = getMatch(s.matchGame); // +0x90
+    ESP_LOG_DEBUG(@"[PROBE] Match @MatchGame+0x90 = 0x%llx valid=%d",
+        (unsigned long long)s.match, ESPIsPlausibleObject(s.match));
+    if (!ESPIsPlausibleObject(s.match)) { ESP_LOG_ERROR(@"[PROBE] FAIL stage=Match"); goto done; }
+
+    s.camMgr = ReadAddr<uint64_t>(s.matchGame + 0xD8);
+    ESP_LOG_DEBUG(@"[PROBE] CameraMgr @MatchGame+0xD8 = 0x%llx valid=%d",
+        (unsigned long long)s.camMgr, ESPIsPlausibleObject(s.camMgr));
+    s.camera = s.camMgr ? CameraMain(s.matchGame) : 0; // +0x20
+    ESP_LOG_DEBUG(@"[PROBE] Camera @CamMgr+0x20 = 0x%llx valid=%d",
+        (unsigned long long)s.camera, ESPIsPlausibleObject(s.camera));
+    s.cameraOk = ESPIsPlausibleObject(s.camera);
+
+    s.localPlayer = getLocalPlayer(s.match); // +0xD8
+    ESP_LOG_DEBUG(@"[PROBE] LocalPlayer @Match+0xD8 = 0x%llx valid=%d",
+        (unsigned long long)s.localPlayer, ESPIsPlausibleObject(s.localPlayer));
+    if (!ESPIsPlausibleObject(s.localPlayer)) { ESP_LOG_ERROR(@"[PROBE] FAIL stage=LocalPlayer"); goto done; }
+
+    // Player list: 0x158 primary, 0x160 fallback
+    s.listOk = false;
+    for (uint64_t listOff : { (uint64_t)0x158, (uint64_t)0x160 }) {
+        uint64_t lo = ReadAddr<uint64_t>(s.match + listOff);
+        if (!ESPIsPlausibleObject(lo)) continue;
+        int sz = ReadAddr<int>(lo + 0x18);
+        if (sz <= 0 || sz > 200) continue;
+        uint64_t arr = ReadAddr<uint64_t>(lo + 0x10);
+        if (!ESPIsPlausibleObject(arr)) continue;
+        int alen = ReadAddr<int>(arr + 0x18);
+        ESP_LOG_DEBUG(@"[PROBE] List@0x%llx obj=0x%llx size=%d arr=0x%llx arrLen=%d",
+            (unsigned long long)listOff, (unsigned long long)lo, sz,
+            (unsigned long long)arr, alen);
+        s.listObj = lo; s.itemsArray = arr; s.playerCount = (alen > 0 && alen < sz) ? alen : sz;
+        s.listOk = true;
+        break;
+    }
+    if (!s.listOk) ESP_LOG_WARN(@"[PROBE] player list not found (tried 0x158, 0x160)");
+
+    // Camera matrix sanity
+    if (s.cameraOk) {
+        float *m = GetViewMatrix(s.camera);
+        s.matrixValid = ESPMatrixLooksValid(m);
+        ESP_LOG_DEBUG(@"[PROBE] matrix valid=%d m[0..3]=%f %f %f %f m[15]=%f",
+            s.matrixValid, m[0], m[1], m[2], m[3], m[15]);
+    }
+
+    s.mainOk = ESPIsPlausibleObject(s.matchGame) && ESPIsPlausibleObject(s.localPlayer);
+    ESP_LOG_INFO(@"[PROBE] done mainOk=%d listOk=%d cameraOk=%d matrixValid=%d players=%d",
+        s.mainOk, s.listOk, s.cameraOk, s.matrixValid, s.playerCount);
+done:
+    ESPScopedTimerEnd(&T0);
+    return s;
+}
+
+extern "C" uint64_t ESPFindGameFacadeGlobal(uint64_t moduleBase, const uint64_t *candidates, size_t count) {
+    ESP_LOG_INFO(@"[HEAL] trying %zu GameFacade global candidates", count);
+    for (size_t i = 0; i < count; i++) {
+        uint64_t rva = candidates[i];
+        uint64_t ti = ReadAddr<uint64_t>(moduleBase + rva);
+        if (!ESPIsPlausibleObject(ti)) { ESP_LOG_DEBUG(@"[HEAL] cand[%zu] 0x%llx TypeInfo invalid", i, (unsigned long long)rva); continue; }
+        uint64_t sb = ReadAddr<uint64_t>(ti + 0xB8);
+        if (!ESPIsPlausibleObject(sb)) { ESP_LOG_DEBUG(@"[HEAL] cand[%zu] StaticBlock invalid", i); continue; }
+        uint64_t mg = ReadAddr<uint64_t>(sb + 0x8);
+        if (!ESPIsPlausibleObject(mg)) { ESP_LOG_DEBUG(@"[HEAL] cand[%zu] MatchGame invalid", i); continue; }
+        uint64_t m = ReadAddr<uint64_t>(mg + 0x90);
+        uint64_t cm = ReadAddr<uint64_t>(mg + 0xD8);
+        if (!ESPIsPlausibleObject(m) || !ESPIsPlausibleObject(cm)) {
+            ESP_LOG_DEBUG(@"[HEAL] cand[%zu] Match/CamMgr invalid", i); continue;
+        }
+        ESP_LOG_INFO(@"[HEAL] found GameFacade global RVA=0x%llx (candidate %zu)", (unsigned long long)rva, i);
+        return rva;
+    }
+    ESP_LOG_WARN(@"[HEAL] no candidate matched");
+    return 0;
+}
+
+extern "C" uint64_t ESPScanGameFacadeStatic(uint64_t moduleBase, uint64_t searchSize) {
+    // Strategy: find TypeInfo by scanning __DATA for a pointer whose +0xB8
+    // points to a static block whose +0x8 yields a valid MatchGame.
+    // Full pointer scan is O(N) reads; cap to first 256MB of module (DATA-heavy area).
+    // NOTE: This is a best-effort fallback — prefer ESPFindGameFacadeGlobal with
+    // known RVAs from dump.cs of the exact build. AOB on code (get_CurrentMatchGame)
+    // needs a byte-pattern from IDA and is more precise; see AUTO_SCAN.md.
+    ESP_LOG_INFO(@"[SCAN] GameFacade static-block pointer scan start base=0x%llx size=0x%llx",
+        (unsigned long long)moduleBase, (unsigned long long)searchSize);
+    mach_port_t task = ESPGetTargetTask(); // via accessor (header static is per-TU)
+    if (task == MACH_PORT_NULL) { ESP_LOG_ERROR(@"[SCAN] null task — GetGameModule_Base not yet called?"); return 0; }
+    uint64_t end = moduleBase + searchSize;
+    const uint64_t chunk = 1 << 20; // 1MB
+    std::vector<uint64_t> chunkBuf(chunk / 8);
+    for (uint64_t cur = moduleBase; cur < end; cur += chunk) {
+        uint64_t toRead = end - cur; if (toRead > chunk) toRead = chunk;
+        vm_size_t sz = 0;
+        kern_return_t kr = vm_read_overwrite(task, (vm_address_t)cur,
+                                             (vm_size_t)toRead, (vm_address_t)chunkBuf.data(), &sz);
+        if (kr != KERN_SUCCESS || sz == 0) continue;
+        size_t n = (size_t)sz / 8;
+        for (size_t i = 0; i < n; i++) {
+            uint64_t candTypeInfo = chunkBuf[i];
+            if (!ESPIsPlausibleObject(candTypeInfo)) continue;
+            uint64_t sb = ReadAddr<uint64_t>(candTypeInfo + 0xB8);
+            if (!ESPIsPlausibleObject(sb)) continue;
+            uint64_t mg = ReadAddr<uint64_t>(sb + 0x8);
+            if (!ESPIsPlausibleObject(mg)) continue;
+            if (!ESPIsPlausibleObject(ReadAddr<uint64_t>(mg + 0x90))) continue;
+            if (!ESPIsPlausibleObject(ReadAddr<uint64_t>(mg + 0xD8))) continue;
+            uint64_t rva = (cur + i * 8) - moduleBase;
+            ESP_LOG_INFO(@"[SCAN] found TypeInfo RVA=0x%llx (mem 0x%llx)",
+                (unsigned long long)rva, (unsigned long long)(cur + i * 8));
+            return rva;
+        }
+        ESP_LOG_DEBUG_THROTTLED(@"[SCAN] scanned to 0x%llx", (unsigned long long)(cur + chunk));
+    }
+    ESP_LOG_WARN(@"[SCAN] GameFacade static-block not found in range");
+    return 0;
+}
+
+// Bone identification is implemented in GameLogic.mm via getPositionExt which
+// needs full UnityMath; this stub logs and defers to FindBoneByY there.
+// Kept for API symmetry / future use.
+extern "C" bool ESPIdentifyBones(uint64_t player, int *headOffset, int *toeOffset) {
+    ESP_LOG_INFO(@"[BONES] ESPIdentifyBones player=0x%llx — see FindBoneByY in GameLogic.mm for Y-scan",
+        (unsigned long long)player);
+    // Actual scan runs inside getHead()/getRightToeNode() (they log winner).
+    (void)headOffset; (void)toeOffset;
+    return true;
+}

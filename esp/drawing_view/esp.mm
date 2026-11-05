@@ -1,4 +1,7 @@
 #import "esp.h"
+#import "../Core/DebugLogger.h"
+#import "../Core/MemoryRegions.h"
+#import "../Core/AOBScanner.h"
 
 #define sWidth  [UIScreen mainScreen].bounds.size.width
 #define sHeight [UIScreen mainScreen].bounds.size.height
@@ -21,10 +24,55 @@ uint64_t Moudule_Base = -1;
         self.layers = [NSMutableArray array];
         self.backgroundColor = [UIColor clearColor];
 
+        // --- Debug logger setup (DEBUG + file mirror) ---
+        ESPSetLogLevel(ESPLogLevelDebug); // change to Info in release
+        ESPLogToFile(NO); // set YES to persist Documents/esp_debug.log
+        ESP_LOG_INFO(@"[ESP] ESP_View init start screen=%.0fx%.0f", sWidth, sHeight);
+        auto Tinit = ESPScopedTimerBegin("ESP_View init", YES);
+
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
+            ESP_LOG_INFO(@"[ESP] resolving module base (once)...");
             Moudule_Base = (uint64_t)GetGameModule_Base((char*)"freefireth");
+            ESP_LOG_INFO(@"[ESP] Moudule_Base=0x%llx pid=%d", (unsigned long long)Moudule_Base, ESPGetTargetPid());
+            if (Moudule_Base == 0) {
+                ESP_LOG_ERROR(@"[ESP] Module_Base=0 — game not running or task_for_pid failed. Retrying in 2s...");
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC),
+                               dispatch_get_main_queue(), ^{
+                    Moudule_Base = (uint64_t)GetGameModule_Base((char*)"freefireth");
+                    ESP_LOG_INFO(@"[ESP] retry Moudule_Base=0x%llx", (unsigned long long)Moudule_Base);
+                });
+            } else {
+                // Dump readable regions once for debugging (DEBUG).
+                ESPDumpRegions(ESPGetTargetTask(), "ESP_View init");
+                // Probe chain once to validate offsets before first frame.
+                ESPChainSnapshot snap = ESPProbeChain(Moudule_Base, gGameFacadeGlobalRVA);
+                ESP_LOG_INFO(@"[ESP] initial probe mainOk=%d listOk=%d camOk=%d players=%d",
+                    snap.mainOk, snap.listOk, snap.cameraOk, snap.playerCount);
+                if (!snap.mainOk) {
+                    ESP_LOG_WARN(@"[ESP] initial probe FAILED — attempting heal (candidates + scan)...");
+                    uint64_t healed = 0;
+                    if (kGameFacadeCandidatesCount > 0) {
+                        healed = ESPFindGameFacadeGlobal(Moudule_Base, kGameFacadeCandidates, kGameFacadeCandidatesCount);
+                    }
+                    if (!healed) {
+                        ESP_LOG_WARN(@"[ESP] candidate heal failed, trying pointer scan (may take ~1-3s)...");
+                        // 256MB covers __DATA for UnityFramework 1.132.1 (DATA at 0xb1c8000, size ~0x11c0000).
+                        // Scan from moduleBase+0x8000000ish would be faster, but full scan is safest.
+                        healed = ESPScanGameFacadeStatic(Moudule_Base, 0xC000000); // 192MB
+                    }
+                    if (healed) {
+                        ESP_LOG_INFO(@"[ESP] healed global RVA=0x%llx (was 0x%llx)", (unsigned long long)healed, (unsigned long long)gGameFacadeGlobalRVA);
+                        gGameFacadeGlobalRVA = healed;
+                        ESPChainSnapshot snap2 = ESPProbeChain(Moudule_Base, gGameFacadeGlobalRVA);
+                        ESP_LOG_INFO(@"[ESP] post-heal probe mainOk=%d players=%d", snap2.mainOk, snap2.playerCount);
+                    } else {
+                        ESP_LOG_ERROR(@"[ESP] HEAL FAILED — check AUTO_SCAN.md; global RVA must be found via IDA/Ghidra");
+                    }
+                }
+            }
         });
+        ESPScopedTimerEnd(&Tinit);
 
         self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(updateBoxes)];
         [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
@@ -104,8 +152,11 @@ uint64_t Moudule_Base = -1;
 
 - (void)update_data
 {
+    auto Tframe = ESPScopedTimerBegin("update_data", NO); // log only at DEBUG via manual end below
+    static int sConsecutiveFails = 0;
     CFTimeInterval t = CACurrentMediaTime();
     CGSize size = self.bounds.size;
+    ESP_LOG_DEBUG_THROTTLED(@"[ESP] update_data frame start bounds=%.0fx%.0f", size.width, size.height);
     
     const NSInteger boxCount = 10;
     const CGFloat baseWidth = 60.0;
@@ -126,12 +177,32 @@ uint64_t Moudule_Base = -1;
     uint64_t myPawnObject = getLocalPlayer(match);
     if (!isVaildPtr(myPawnObject)) return;
     
-    uint64_t mainCameraTransform = ReadAddr<uint64_t>(myPawnObject + 0x2B0);
+    // CHANGED for 1.132.1: MainCameraTransform 0x2B0 -> 0x3E8 (Player.MainCameraTransform)
+    uint64_t mainCameraTransform = ReadAddr<uint64_t>(myPawnObject + 0x3E8);
     Vector3 myLocation = getPositionExt(mainCameraTransform);
     
-    uint64_t player = ReadAddr<uint64_t>(match + 0xC8);
-    uint64_t tValue = ReadAddr<uint64_t>(player + 0x28);
-    int coutValue = ReadAddr<int>(tValue + 0x18);
+    // CHANGED for 1.132.1: Player list OLD Match+0xC8 -> holder+0x28 -> array CHAIN BROKEN.
+    // NEW: Match (JMAGGLCNGIG) has List<Player> at +0x158 (LMOIPODCHOL).
+    // IL2CPP List<T> layout (generic instantiation): _items at +0x10, _size at +0x18.
+    // SzArray layout: length at +0x18, elements at +0x20 + i*8 (same as old array part).
+    // Fallback: +0x160 (DPFFPGAFGDK List<Player>) if 0x158 empty.
+    // Also available: Dictionaries at 0x128/0x130/0x140/0x150 (harder to enumerate).
+    uint64_t listObj = ReadAddr<uint64_t>(match + 0x158);
+    if (!isVaildPtr(listObj) || ReadAddr<int>(listObj + 0x18) == 0) {
+        listObj = ReadAddr<uint64_t>(match + 0x160);
+    }
+    if (!isVaildPtr(listObj)) return;
+    uint64_t tValue = ReadAddr<uint64_t>(listObj + 0x10); // _items array
+    if (!isVaildPtr(tValue)) return;
+    int coutValue = ReadAddr<int>(listObj + 0x18); // _size (same as array length)
+    // Cross-check with array length; use min to stay safe
+    int arrLen = ReadAddr<int>(tValue + 0x18);
+    if (arrLen > 0 && arrLen < coutValue) coutValue = arrLen;
+    if (coutValue <= 0 || coutValue > 200) {
+        // Sanity: Free Fire max players ~ 50-100; log and bail if insane
+        NSLog(@"[Flork] Invalid player count %d (listObj=%llx tValue=%llx)", coutValue, listObj, tValue);
+        return;
+    }
     
     float *matrix = GetViewMatrix(camera);
 
@@ -177,8 +248,31 @@ uint64_t Moudule_Base = -1;
         [boxesMutable addObject:val];
     }
 
+    if (countObject == 0 && (Moudule_Base != 0)) {
+        sConsecutiveFails++;
+        ESP_LOG_DEBUG_THROTTLED(@"[ESP] zero-count frame #%d (fails=%d)", countObject, sConsecutiveFails);
+        if (sConsecutiveFails == 60) {
+            ESP_LOG_WARN(@"[ESP] 60 consecutive zero-count frames — re-probing chain (RVA may be stale)...");
+            ESPChainSnapshot snap = ESPProbeChain(Moudule_Base, gGameFacadeGlobalRVA);
+            if (!snap.mainOk) {
+                uint64_t healed = ESPFindGameFacadeGlobal(Moudule_Base, kGameFacadeCandidates, kGameFacadeCandidatesCount);
+                if (!healed) healed = ESPScanGameFacadeStatic(Moudule_Base, 0xC000000);
+                if (healed && healed != gGameFacadeGlobalRVA) {
+                    ESP_LOG_INFO(@"[ESP] runtime heal: RVA 0x%llx -> 0x%llx", (unsigned long long)gGameFacadeGlobalRVA, (unsigned long long)healed);
+                    gGameFacadeGlobalRVA = healed;
+                } else if (!healed) {
+                    ESP_LOG_ERROR(@"[ESP] runtime heal failed — manual IDA step required (AUTO_SCAN.md)");
+                }
+            }
+            sConsecutiveFails = 0;
+        }
+    } else {
+        sConsecutiveFails = 0;
+    }
     NSLog(@"[Flork] Count: %d", countObject);
-    
+    ESP_LOG_INFO_ONCE(@"[ESP] first Count=%d boxes=%lu", countObject, boxesMutable.count);
+    ESP_LOG_DEBUG_THROTTLED(@"[ESP] frame end count=%d boxes=%lu t=%.3f", countObject, boxesMutable.count, CACurrentMediaTime() - t);
+    ESPScopedTimerEnd(&Tframe);
     self.boxes = boxesMutable;
     [self setNeedsDisplay];
 }

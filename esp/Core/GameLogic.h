@@ -3,6 +3,22 @@
 
 #import "MemoryUtils.h"
 #import "UnityMath.h"
+#import "DebugLogger.h"
+#import "OffsetScanner.h"
+
+#pragma mark - Global RVA (healable at runtime)
+
+// Current best RVA for GameFacade TypeInfo (Module_Base + RVA -> TypeInfo).
+// OLD value 0x9985B70 is INVALID for 1.132.1. Set to 0 to trigger auto-heal
+// (ESPFindGameFacadeGlobal + ESPScanGameFacadeStatic on first probe failure).
+// To heal: put candidate RVAs from dump.cs of the exact build here, or let the
+// scanner find it (ESPProbeChain -> ESPScanGameFacadeStatic).
+extern uint64_t gGameFacadeGlobalRVA; // defined in GameLogic.mm, default 0x9985B70 (old)
+
+// Candidate RVAs tried by the healer before falling back to pointer scan.
+// Add new builds' RVAs here as they are discovered.
+extern const uint64_t kGameFacadeCandidates[];
+extern const size_t kGameFacadeCandidatesCount;
 
 #pragma mark - Function Game
 
