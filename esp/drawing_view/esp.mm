@@ -36,12 +36,8 @@ uint64_t Moudule_Base = -1;
             Moudule_Base = (uint64_t)GetGameModule_Base((char*)"freefireth");
             ESP_LOG_INFO(@"[ESP] Moudule_Base=0x%llx pid=%d", (unsigned long long)Moudule_Base, ESPGetTargetPid());
             if (Moudule_Base == 0) {
-                ESP_LOG_ERROR(@"[ESP] Module_Base=0 — game not running or task_for_pid failed. Retrying in 2s...");
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC),
-                               dispatch_get_main_queue(), ^{
-                    Moudule_Base = (uint64_t)GetGameModule_Base((char*)"freefireth");
-                    ESP_LOG_INFO(@"[ESP] retry Moudule_Base=0x%llx", (unsigned long long)Moudule_Base);
-                });
+                ESP_LOG_ERROR(@"[ESP] Module_Base=0 — game not running or task_for_pid failed. Will retry in update_data every ~2s...");
+                // update_data now retries periodically (was: single +2s retry then gave up forever).
             } else {
                 // Dump readable regions once for debugging (DEBUG).
                 ESPDumpRegions(ESPGetTargetTask(), "ESP_View init");
@@ -165,7 +161,17 @@ uint64_t Moudule_Base = -1;
     NSMutableArray<NSValue *> *boxesMutable = [NSMutableArray arrayWithCapacity:boxCount];
     int countObject = 0;
 
-    if (Moudule_Base == -1) return;
+    // Fix (log 2026-11-05): Moudule_Base is uint64_t; failure value is 0, NOT -1 (signed compare never fires).
+    // Also retry base resolution periodically so opening HUD before the game still recovers.
+    if (Moudule_Base == 0 || Moudule_Base == (uint64_t)-1) {
+        static int sBaseRetryTicks = 0;
+        if ((++sBaseRetryTicks % 120) == 0) { // ~2s at 60fps
+            ESP_LOG_INFO(@"[ESP] base still 0 — retrying GetGameModule_Base...");
+            Moudule_Base = (uint64_t)GetGameModule_Base((char*)"freefireth");
+            ESP_LOG_INFO(@"[ESP] base retry Moudule_Base=0x%llx pid=%d", (unsigned long long)Moudule_Base, ESPGetTargetPid());
+        }
+        return; // skip chain; avoids 100+ identical ERROR lines per second (was 9600 lines in log)
+    }
 
     uint64_t matchGame = getMatchGame(Moudule_Base);
     uint64_t camera = CameraMain(matchGame);

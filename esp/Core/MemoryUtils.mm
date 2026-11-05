@@ -2,6 +2,17 @@
 #include <errno.h>
 #include <mach/error.h>
 #include <stdlib.h>
+#include <strings.h> // strcasestr
+#include <string.h>
+
+// Case-insensitive substring match across historical/bundle variants.
+// Log evidence 2026-11-05: "freefireth" never matched (binary is "FreeFire", case-sensitive strstr).
+static bool MatchProcName(const char *comm, const char *needle) {
+    if (!comm || !needle || !*needle) return false;
+    if (strcasestr(comm, needle)) return true;
+    // Known variants for Free Fire TH (bundle com.dts.freefireth, binary FreeFire)
+    return strcasestr(comm, "freefire") != NULL || strcasestr(comm, "FreeFire") != NULL;
+}
 
 pid_t GetGameProcesspid(char* GameProcessName) {
     size_t length = 0;
@@ -31,17 +42,33 @@ pid_t GetGameProcesspid(char* GameProcessName) {
     
     int count = (int)length / sizeof(struct kinfo_proc);
     ESP_LOG_DEBUG(@"[MEM] scanning %d procs for '%s'", count, GameProcessName);
+    int matches = 0;
     for (int i = 0; i < count; ++i) {
         const char *procname = procBuffer[i].kp_proc.p_comm;
         pid_t pid = procBuffer[i].kp_proc.p_pid;
-        if (strstr(procname, GameProcessName)) {
+        if (MatchProcName(procname, GameProcessName)) {
+            matches++;
             ESP_LOG_INFO(@"[MEM] found '%s' pid=%d (comm='%s')", GameProcessName, pid, procname);
             free(procBuffer);
             return pid;
         }
+        // Dump candidates that even vaguely look like the game (helps fix name drift)
+        if (procname[0] && strcasestr(procname, "fire") != NULL) {
+            ESP_LOG_DEBUG(@"[MEM]   candidate pid=%d comm='%s'", (int)pid, procname);
+        }
     }
     
-    ESP_LOG_ERROR(@"[MEM] process '%s' not found among %d procs — is game running? name match?", GameProcessName, count);
+    // On total miss, dump a compact list of unique comms (DEBUG) so the right name can be identified remotely.
+    if (matches == 0) {
+        ESP_LOG_DEBUG(@"[MEM] dumping all procs (DEBUG) for name diagnosis:");
+        for (int i = 0; i < count; ++i) {
+            const char *procname = procBuffer[i].kp_proc.p_comm;
+            if (procname[0]) {
+                ESP_LOG_DEBUG(@"[MEM]   proc pid=%d comm='%s'", (int)procBuffer[i].kp_proc.p_pid, procname);
+            }
+        }
+    }
+    ESP_LOG_ERROR(@"[MEM] process '%s' not found among %d procs (case-insensitive) — is game running? see proc dump above.", GameProcessName, count);
     free(procBuffer);
     return -1;
 }
