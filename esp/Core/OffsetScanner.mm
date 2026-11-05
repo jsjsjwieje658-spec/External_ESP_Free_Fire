@@ -92,7 +92,8 @@ extern "C" ESPChainSnapshot ESPProbeChain(uint64_t moduleBase, uint64_t globalRV
     // chain stable (MatchGame/Match/LocalPlayer) but camera 0x0 and list empty even
     // minutes into the session; offsets verified in dump.cs, so objects may be
     // different instances — dump neighbourhoods to locate the real fields).
-    if (s.mainOk && (!s.cameraOk || !s.listOk)) {
+    // NOTE: s.mainOk is computed AFTER this block (line ~139) — use direct checks here.
+    if (ESPIsPlausibleObject(s.matchGame) && ESPIsPlausibleObject(s.localPlayer) && (!s.cameraOk || !s.listOk)) {
         ESP_LOG_INFO(@"[DUMP] --- Match 0x%llx ---", (unsigned long long)s.match);
         for (uint64_t o = 0x10; o <= 0x300; o += 8) {
             uint64_t v = ReadAddr<uint64_t>(s.match + o);
