@@ -17,8 +17,12 @@ static bool ESPIsPlausibleObject(uint64_t ptr) {
 static bool ESPMatrixLooksValid(float *m) {
     if (!m) return false;
     // View-projection matrix: all finite, last row not all zero, |m[15]| sane.
+    // Tightened 2026-11-05: false positive had m[1]=1.7e22, m[3]=1.8e31, m[15]=7.2e31 —
+    // finite and nonzero, so old check passed. Real view-proj entries are bounded:
+    // rotation ~[-2,2], translation up to ~1e5 for Free Fire maps.
     for (int i = 0; i < 16; i++) {
         if (isnan(m[i]) || isinf(m[i])) return false;
+        if (fabsf(m[i]) > 1e6f) return false;
     }
     if (fabsf(m[15]) < 0.001f) return false; // w row should be ~1 for perspective
     return true;
@@ -146,14 +150,30 @@ extern "C" uint64_t ESPScanGameFacadeStatic(uint64_t moduleBase, uint64_t search
     // NOTE: This is a best-effort fallback — prefer ESPFindGameFacadeGlobal with
     // known RVAs from dump.cs of the exact build. AOB on code (get_CurrentMatchGame)
     // needs a byte-pattern from IDA and is more precise; see AUTO_SCAN.md.
-    ESP_LOG_INFO(@"[SCAN] GameFacade static-block pointer scan start base=0x%llx size=0x%llx",
-        (unsigned long long)moduleBase, (unsigned long long)searchSize);
+    //
+    // Mach-O 1.132.1 UnityFramework: __TEXT = 0x0-0xB1C8000, __DATA = 0xB1C8000-0xC388000
+    // (verified from LoadCommands). Real globals (TypeInfo ptr) live in __DATA.
+    // Log 2026-11-05: scanning from moduleBase found __TEXT literal-pool false
+    // positives (+0x1047b8, +0x252d1d8 volatile heap data that changed within seconds,
+    // garbage camera 0x14FFFFFFFF / matrix 1e22 and 1e31) and returned before
+    // ever reaching __DATA. Restrict to __DATA.
+    const uint64_t kDataStartRVA = 0xB1C8000;
+    const uint64_t kDataEndRVA = 0xC388000; // == __DATA vmaddr+vmsize (0xB1C8000+0x11C0000)
+    uint64_t scanStart = moduleBase + kDataStartRVA;
+    uint64_t dataEnd = moduleBase + kDataEndRVA;
+    uint64_t end = moduleBase + searchSize;
+    if (end > dataEnd) {
+        end = dataEnd;
+        ESP_LOG_INFO(@"[SCAN] narrowing scan to __DATA [0x%llx, 0x%llx) (searchSize capped)",
+            (unsigned long long)kDataStartRVA, (unsigned long long)kDataEndRVA);
+    }
+    ESP_LOG_INFO(@"[SCAN] GameFacade static-block pointer scan start base=0x%llx DATA=[0x%llx, 0x%llx)",
+        (unsigned long long)moduleBase, (unsigned long long)scanStart, (unsigned long long)end);
     mach_port_t task = ESPGetTargetTask(); // via accessor (header static is per-TU)
     if (task == MACH_PORT_NULL) { ESP_LOG_ERROR(@"[SCAN] null task — GetGameModule_Base not yet called?"); return 0; }
-    uint64_t end = moduleBase + searchSize;
     const uint64_t chunk = 1 << 20; // 1MB
     std::vector<uint64_t> chunkBuf(chunk / 8);
-    for (uint64_t cur = moduleBase; cur < end; cur += chunk) {
+    for (uint64_t cur = scanStart; cur < end; cur += chunk) {
         uint64_t toRead = end - cur; if (toRead > chunk) toRead = chunk;
         vm_size_t sz = 0;
         kern_return_t kr = vm_read_overwrite(task, (vm_address_t)cur,
