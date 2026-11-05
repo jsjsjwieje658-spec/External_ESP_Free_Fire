@@ -31,7 +31,7 @@ std::vector<VMRegionInfo> ESPEnumerateRegions(task_t task) {
         r.address = addr; r.size = size;
         r.protection = info.protection;
         r.nesting = (int)depth;
-        r.name = info.object_name ? info.object_name : "";
+        r.name = ""; // iOS SDK: vm_region_submap_info_64 has no object_name (debug-only; dropped)
         r.readable = (info.protection & VM_PROT_READ) != 0;
         out.push_back(std::move(r));
         addr += size;
