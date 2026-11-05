@@ -26,7 +26,7 @@ uint64_t Moudule_Base = -1;
 
         // --- Debug logger setup (DEBUG + file mirror) ---
         ESPSetLogLevel(ESPLogLevelDebug); // change to Info in release
-        ESPLogToFile(NO); // set YES to persist Documents/esp_debug.log
+        ESPLogToFile(YES); // persist Documents/esp_debug.log (NSHomeDirectory)
         ESP_LOG_INFO(@"[ESP] ESP_View init start screen=%.0fx%.0f", sWidth, sHeight);
         auto Tinit = ESPScopedTimerBegin("ESP_View init", YES);
 
