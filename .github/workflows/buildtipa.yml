@@ -18,7 +18,9 @@ jobs:
         run: |
           set -e
           git clone --recursive https://github.com/theos/theos.git Theos
-          # Theos no longer ships sdks as a submodule — clone separately (required!)
+          # Theos ships sdks/ as an empty placeholder (.keep only), NOT a submodule.
+          # Remove it, then clone the real SDKs repo (contains iPhoneOS16.5.sdk).
+          rm -rf Theos/sdks
           git clone --depth 1 https://github.com/theos/sdks.git Theos/sdks
           echo "--- Theos/sdks ---"
           ls -1 Theos/sdks/
