@@ -14,12 +14,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Theos
+      - name: Setup Theos + SDKs
         run: |
           set -e
           git clone --recursive https://github.com/theos/theos.git Theos
-          ls Theos/sdks/ | head -20
-          xcode-select --install || true
+          # Theos no longer ships sdks as a submodule — clone separately (required!)
+          git clone --depth 1 https://github.com/theos/sdks.git Theos/sdks
+          echo "--- Theos/sdks ---"
+          ls -1 Theos/sdks/
+          test -d Theos/sdks/iPhoneOS16.5.sdk || { echo "::error::iPhoneOS16.5.sdk missing in Theos/sdks (check TARGET in makefile)"; exit 1; }
+          echo "SDK OK"
         env:
           DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
 
