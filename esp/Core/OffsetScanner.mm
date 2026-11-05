@@ -87,6 +87,47 @@ extern "C" ESPChainSnapshot ESPProbeChain(uint64_t moduleBase, uint64_t globalRV
     }
     if (!s.listOk) ESP_LOG_WARN(@"[PROBE] player list not found (tried 0x158, 0x160)");
 
+    // Diagnostic: dump raw qwords at key objects when camera/list missing in-match,
+    // so the true camera/list offsets can be read off the log (log 2026-11-05 #6:
+    // chain stable (MatchGame/Match/LocalPlayer) but camera 0x0 and list empty even
+    // minutes into the session; offsets verified in dump.cs, so objects may be
+    // different instances — dump neighbourhoods to locate the real fields).
+    if (s.mainOk && (!s.cameraOk || !s.listOk)) {
+        ESP_LOG_INFO(@"[DUMP] --- Match 0x%llx ---", (unsigned long long)s.match);
+        for (uint64_t o = 0x10; o <= 0x300; o += 8) {
+            uint64_t v = ReadAddr<uint64_t>(s.match + o);
+            if (ESPIsPlausibleObject(v)) {
+                int sz18 = 0;
+                uint64_t arr = ReadAddr<uint64_t>(v + 0x10);
+                if (ESPIsPlausibleObject(arr)) sz18 = ReadAddr<int>(arr + 0x18);
+                ESP_LOG_INFO(@"[DUMP] Match+0x%llx = 0x%llx (asList? arr=0x%llx arrLen=%d)",
+                    (unsigned long long)o, (unsigned long long)v,
+                    (unsigned long long)arr, sz18);
+            }
+        }
+        ESP_LOG_INFO(@"[DUMP] --- MatchGame 0x%llx (camera candidates) ---", (unsigned long long)s.matchGame);
+        for (uint64_t o = 0x10; o <= 0x200; o += 8) {
+            uint64_t v = ReadAddr<uint64_t>(s.matchGame + o);
+            if (!ESPIsPlausibleObject(v)) continue;
+            uint64_t m20 = ReadAddr<uint64_t>(v + 0x20);
+            uint64_t m28 = ReadAddr<uint64_t>(v + 0x28);
+            if (ESPIsPlausibleObject(m20) || ESPIsPlausibleObject(m28)) {
+                ESP_LOG_INFO(@"[DUMP] MatchGame+0x%llx = 0x%llx (+0x20=0x%llx +0x28=0x%llx)",
+                    (unsigned long long)o, (unsigned long long)v,
+                    (unsigned long long)m20, (unsigned long long)m28);
+            }
+        }
+        ESP_LOG_INFO(@"[DUMP] --- CameraMgr 0x%llx ---", (unsigned long long)s.camMgr);
+        if (ESPIsPlausibleObject(s.camMgr)) {
+            for (uint64_t o = 0x10; o <= 0x100; o += 8) {
+                uint64_t v = ReadAddr<uint64_t>(s.camMgr + o);
+                if (ESPIsPlausibleObject(v)) {
+                    ESP_LOG_INFO(@"[DUMP] CamMgr+0x%llx = 0x%llx", (unsigned long long)o, (unsigned long long)v);
+                }
+            }
+        }
+    }
+
     // Camera matrix sanity
     if (s.cameraOk) {
         float *m = GetViewMatrix(s.camera);
