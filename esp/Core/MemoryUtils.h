@@ -27,7 +27,10 @@ vm_map_offset_t GetGameModule_Base(char* GameProcessName);
 bool _read(long addr, void *buffer, int len);
 
 template<typename T> T ReadAddr(long address) {
-    T data;
+    // Fix (log 2026-11-05): was `T data;` — UNINITIALIZED on read failure, so garbage
+    // stack values repeatedly "validated" as pointers (e.g. StaticBlock=MatchGame=0x2c000000f).
+    // Zero-init so failed reads deterministically yield 0 (invalid pointer).
+    T data{};
     if (!_read(address, reinterpret_cast<void *>(&data), sizeof(T))) {
         // Keep silent at DEBUG here (hot path) — callers log stage-level failures.
         // ESP_LOG_DEBUG(@"[READ] fail addr=0x%lx size=%zu", address, sizeof(T));

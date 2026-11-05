@@ -114,7 +114,25 @@ extern "C" uint64_t ESPFindGameFacadeGlobal(uint64_t moduleBase, const uint64_t 
         if (!ESPIsPlausibleObject(m) || !ESPIsPlausibleObject(cm)) {
             ESP_LOG_DEBUG(@"[HEAL] cand[%zu] Match/CamMgr invalid", i); continue;
         }
-        ESP_LOG_INFO(@"[HEAL] found GameFacade global RVA=0x%llx (candidate %zu)", (unsigned long long)rva, i);
+        // Full-chain validation (log 2026-11-05 false positive 0x1047b8 passed the shallow checks).
+        // Require LocalPlayer plausibility + camera matrix sanity to accept.
+        uint64_t lp = getLocalPlayer(m);
+        if (!ESPIsPlausibleObject(lp)) {
+            ESP_LOG_DEBUG(@"[HEAL] cand[%zu] 0x%llx LocalPlayer invalid (lp=0x%llx) — rejecting",
+                i, (unsigned long long)rva, (unsigned long long)lp);
+            continue;
+        }
+        uint64_t cam = CameraMain(mg);
+        if (ESPIsPlausibleObject(cam)) {
+            float *mx = GetViewMatrix(cam);
+            if (ESPMatrixLooksValid(mx)) {
+                ESP_LOG_INFO(@"[HEAL] found GameFacade global RVA=0x%llx (candidate %zu, LocalPlayer+matrix OK)", (unsigned long long)rva, i);
+                return rva;
+            }
+            ESP_LOG_DEBUG(@"[HEAL] cand[%zu] matrix invalid — rejecting", i);
+            continue;
+        }
+        ESP_LOG_INFO(@"[HEAL] found GameFacade global RVA=0x%llx (candidate %zu, LocalPlayer OK)", (unsigned long long)rva, i);
         return rva;
     }
     ESP_LOG_WARN(@"[HEAL] no candidate matched");
@@ -149,10 +167,29 @@ extern "C" uint64_t ESPScanGameFacadeStatic(uint64_t moduleBase, uint64_t search
             if (!ESPIsPlausibleObject(sb)) continue;
             uint64_t mg = ReadAddr<uint64_t>(sb + 0x8);
             if (!ESPIsPlausibleObject(mg)) continue;
-            if (!ESPIsPlausibleObject(ReadAddr<uint64_t>(mg + 0x90))) continue;
+            uint64_t m = ReadAddr<uint64_t>(mg + 0x90);
+            if (!ESPIsPlausibleObject(m)) continue;
             if (!ESPIsPlausibleObject(ReadAddr<uint64_t>(mg + 0xD8))) continue;
+            // Full-chain validation + continue scanning on failure (was: return first shallow hit).
+            // Log 2026-11-05: shallow hit at +0x1047b8 was a TEXT literal-pool false positive
+            // (StaticBlock==MatchGame==0x2c000000f garbage, Camera=0x14FFFFFFFF poison).
+            uint64_t lp = getLocalPlayer(m);
+            if (!ESPIsPlausibleObject(lp)) {
+                ESP_LOG_DEBUG(@"[SCAN] shallow hit 0x%llx rejected (LocalPlayer=0x%llx)",
+                    (unsigned long long)((cur + i * 8) - moduleBase), (unsigned long long)lp);
+                continue;
+            }
+            uint64_t cam = CameraMain(mg);
+            if (ESPIsPlausibleObject(cam)) {
+                float *mx = GetViewMatrix(cam);
+                if (!ESPMatrixLooksValid(mx)) {
+                    ESP_LOG_DEBUG(@"[SCAN] shallow hit 0x%llx rejected (matrix invalid)",
+                        (unsigned long long)((cur + i * 8) - moduleBase));
+                    continue;
+                }
+            }
             uint64_t rva = (cur + i * 8) - moduleBase;
-            ESP_LOG_INFO(@"[SCAN] found TypeInfo RVA=0x%llx (mem 0x%llx)",
+            ESP_LOG_INFO(@"[SCAN] found TypeInfo RVA=0x%llx (mem 0x%llx, full-chain OK)",
                 (unsigned long long)rva, (unsigned long long)(cur + i * 8));
             return rva;
         }

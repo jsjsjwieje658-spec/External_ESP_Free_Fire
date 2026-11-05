@@ -58,10 +58,16 @@ uint64_t Moudule_Base = -1;
                         healed = ESPScanGameFacadeStatic(Moudule_Base, 0xC000000); // 192MB
                     }
                     if (healed) {
-                        ESP_LOG_INFO(@"[ESP] healed global RVA=0x%llx (was 0x%llx)", (unsigned long long)healed, (unsigned long long)gGameFacadeGlobalRVA);
+                        uint64_t old = gGameFacadeGlobalRVA;
                         gGameFacadeGlobalRVA = healed;
                         ESPChainSnapshot snap2 = ESPProbeChain(Moudule_Base, gGameFacadeGlobalRVA);
-                        ESP_LOG_INFO(@"[ESP] post-heal probe mainOk=%d players=%d", snap2.mainOk, snap2.playerCount);
+                        ESP_LOG_INFO(@"[ESP] healed global RVA=0x%llx (was 0x%llx) post-heal mainOk=%d players=%d",
+                            (unsigned long long)healed, (unsigned long long)old, snap2.mainOk, snap2.playerCount);
+                        if (!snap2.mainOk) {
+                            // Do not keep a heal that fails full validation (log 2026-11-05 false positive).
+                            ESP_LOG_ERROR(@"[ESP] healed RVA failed re-probe — reverting to 0x%llx. Need IDA/Ghidra or wider scan.", (unsigned long long)old);
+                            gGameFacadeGlobalRVA = old;
+                        }
                     } else {
                         ESP_LOG_ERROR(@"[ESP] HEAL FAILED — check AUTO_SCAN.md; global RVA must be found via IDA/Ghidra");
                     }
