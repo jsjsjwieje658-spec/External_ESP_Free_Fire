@@ -96,15 +96,47 @@ vm_map_offset_t GetGameModule_Base(char* GameProcessName) {
         return 0;
     }
     
-    kern_return_t kr = mach_vm_region_recurse(get_task, &vmoffset, &vmsize, &nesting_depth, (vm_region_recurse_info_t)&vbr, &vbrcount);
-    ESP_LOG_DEBUG(@"[MEM] mach_vm_region_recurse -> kr=%d (%s) base=0x%llx size=0x%llx name='%s'",
-        kr, mach_error_string(kr), (unsigned long long)vmoffset,
-        (unsigned long long)vmsize, ""); // iOS SDK: no object_name in submap_info
-    if (kr == KERN_SUCCESS) {
-        ESP_LOG_INFO(@"[MEM] module base=0x%llx (first region) pid=%d", (unsigned long long)vmoffset, pid);
-        return vmoffset;
+    // Fix (log 2026-11-05 esp_debug 5): first VM region is the MAIN executable
+    // (0x100b6c000, 16KB), NOT UnityFramework. UnityFramework __TEXT is a
+    // 177MB executable region (0x10d358000 +0xb1c8000 prot 0x5 in that boot,
+    // 208MB later). Using first-region as base shifted every RVA by 0xC7EC000,
+    // so all chain reads hit other libraries (garbage/volatile pointers).
+    // Find the first large executable region (>= UnityFramework __TEXT size).
+    const mach_vm_size_t kMinTextSize = 0xB1C8000; // UnityFramework 1.132.1 __TEXT vmsize
+    mach_vm_address_t addr = 0;
+    mach_vm_size_t size = 0;
+    uint32_t depth = 0;
+    mach_vm_address_t textBase = 0;
+    mach_vm_address_t firstBase = 0;
+    mach_vm_size_t firstSize = 0;
+    while (true) {
+        struct vm_region_submap_info_64 info;
+        mach_msg_type_number_t infoCount = VM_REGION_SUBMAP_INFO_COUNT_64;
+        kern_return_t kr = mach_vm_region_recurse(get_task, &addr, &size, &depth,
+                                                  (vm_region_recurse_info_t)&info, &infoCount);
+        if (kr != KERN_SUCCESS) break;
+        if (firstBase == 0) { firstBase = addr; firstSize = size; }
+        if (size >= kMinTextSize && (info.protection & VM_PROT_EXECUTE)) {
+            textBase = addr;
+            ESP_LOG_DEBUG(@"[MEM] candidate __TEXT base=0x%llx size=0x%llx prot=0x%x",
+                (unsigned long long)addr, (unsigned long long)size, info.protection);
+            break;
+        }
+        if (size == 0) break;
+        addr += size;
     }
-    ESP_LOG_ERROR(@"[MEM] mach_vm_region_recurse FAILED kr=%d (%s)", kr, mach_error_string(kr));
+    if (textBase != 0) {
+        ESP_LOG_INFO(@"[MEM] module base=0x%llx (UnityFramework __TEXT) pid=%d (first region was 0x%llx size=0x%llx)",
+            (unsigned long long)textBase, pid, (unsigned long long)firstBase, (unsigned long long)firstSize);
+        return textBase;
+    }
+    ESP_LOG_WARN(@"[MEM] no large executable region found (UnityFramework?); falling back to first region 0x%llx size=0x%llx",
+        (unsigned long long)firstBase, (unsigned long long)firstSize);
+    if (firstBase != 0) {
+        ESP_LOG_INFO(@"[MEM] module base=0x%llx (first region fallback) pid=%d", (unsigned long long)firstBase, pid);
+        return firstBase;
+    }
+    ESP_LOG_ERROR(@"[MEM] no regions enumerated — abort");
     return 0;
 }
 
