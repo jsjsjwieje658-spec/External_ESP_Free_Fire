@@ -68,24 +68,40 @@ extern "C" ESPChainSnapshot ESPProbeChain(uint64_t moduleBase, uint64_t globalRV
         (unsigned long long)s.localPlayer, ESPIsPlausibleObject(s.localPlayer));
     if (!ESPIsPlausibleObject(s.localPlayer)) { ESP_LOG_ERROR(@"[PROBE] FAIL stage=LocalPlayer"); goto done; }
 
-    // Player list: 0x158 primary, 0x160 fallback
+    // Player list: 0x158 primary, 0x160 fallback, 0x570 third candidate.
+    // dump.cs Match (JMAGGLCNGIG) has THREE List<Player> fields: 0x158, 0x160,
+    // and DNCDEEJNHIA at 0x570. Log #8 showed 0x158/0x160 null in-match;
+    // 0x570 was never tried (dump loop capped at 0x300). Also: List size check
+    // relaxed — a freshly-spawned match may have size 0 legitimately; array
+    // length alone decides list plausibility.
     s.listOk = false;
-    for (uint64_t listOff : { (uint64_t)0x158, (uint64_t)0x160 }) {
+    for (uint64_t listOff : { (uint64_t)0x158, (uint64_t)0x160, (uint64_t)0x570 }) {
         uint64_t lo = ReadAddr<uint64_t>(s.match + listOff);
         if (!ESPIsPlausibleObject(lo)) continue;
-        int sz = ReadAddr<int>(lo + 0x18);
-        if (sz <= 0 || sz > 200) continue;
         uint64_t arr = ReadAddr<uint64_t>(lo + 0x10);
-        if (!ESPIsPlausibleObject(arr)) continue;
+        if (!ESPIsPlausibleObject(arr)) {
+            // List object with null _items (possible when empty) — treat as ok
+            // only if _size also plausible (0..200). Log for diagnosis.
+            int sz0 = ReadAddr<int>(lo + 0x18);
+            ESP_LOG_DEBUG(@"[PROBE] List@0x%llx obj=0x%llx _items NULL size=%d (empty list? accepted as candidate)",
+                (unsigned long long)listOff, (unsigned long long)lo, sz0);
+            if (sz0 < 0 || sz0 > 1000) continue;
+            s.listObj = lo; s.itemsArray = 0; s.playerCount = 0;
+            s.listOk = true;
+            ESP_LOG_INFO(@"[PROBE] List@0x%llx EMPTY (items null, size=%d) — count 0 but listOk=1", (unsigned long long)listOff, sz0);
+            break;
+        }
+        int sz = ReadAddr<int>(lo + 0x18);
         int alen = ReadAddr<int>(arr + 0x18);
         ESP_LOG_DEBUG(@"[PROBE] List@0x%llx obj=0x%llx size=%d arr=0x%llx arrLen=%d",
             (unsigned long long)listOff, (unsigned long long)lo, sz,
             (unsigned long long)arr, alen);
+        if (alen <= 0 || alen > 500) continue;
         s.listObj = lo; s.itemsArray = arr; s.playerCount = (alen > 0 && alen < sz) ? alen : sz;
         s.listOk = true;
         break;
     }
-    if (!s.listOk) ESP_LOG_WARN(@"[PROBE] player list not found (tried 0x158, 0x160)");
+    if (!s.listOk) ESP_LOG_WARN(@"[PROBE] player list not found (tried 0x158, 0x160, 0x570)");
 
     // Diagnostic: dump raw qwords at key objects when camera/list missing in-match,
     // so the true camera/list offsets can be read off the log (log 2026-11-05 #6:
@@ -95,7 +111,7 @@ extern "C" ESPChainSnapshot ESPProbeChain(uint64_t moduleBase, uint64_t globalRV
     // NOTE: s.mainOk is computed AFTER this block (line ~139) — use direct checks here.
     if (ESPIsPlausibleObject(s.matchGame) && ESPIsPlausibleObject(s.localPlayer) && (!s.cameraOk || !s.listOk)) {
         ESP_LOG_INFO(@"[DUMP] --- Match 0x%llx ---", (unsigned long long)s.match);
-        for (uint64_t o = 0x10; o <= 0x300; o += 8) {
+        for (uint64_t o = 0x10; o <= 0x600; o += 8) {
             uint64_t v = ReadAddr<uint64_t>(s.match + o);
             if (ESPIsPlausibleObject(v)) {
                 int sz18 = 0;
@@ -107,15 +123,26 @@ extern "C" ESPChainSnapshot ESPProbeChain(uint64_t moduleBase, uint64_t globalRV
             }
         }
         ESP_LOG_INFO(@"[DUMP] --- MatchGame 0x%llx (camera candidates) ---", (unsigned long long)s.matchGame);
-        for (uint64_t o = 0x10; o <= 0x200; o += 8) {
+        for (uint64_t o = 0x10; o <= 0x300; o += 8) {
             uint64_t v = ReadAddr<uint64_t>(s.matchGame + o);
             if (!ESPIsPlausibleObject(v)) continue;
             uint64_t m20 = ReadAddr<uint64_t>(v + 0x20);
             uint64_t m28 = ReadAddr<uint64_t>(v + 0x28);
+            // Content test: either entry yields a camera whose view matrix is valid.
+            uint64_t camCand = 0;
+            if (ESPIsPlausibleObject(m20)) {
+                float *x = GetViewMatrix(m20);
+                if (ESPMatrixLooksValid(x)) camCand = m20;
+            }
+            if (!camCand && ESPIsPlausibleObject(m28)) {
+                float *x = GetViewMatrix(m28);
+                if (ESPMatrixLooksValid(x)) camCand = m28;
+            }
             if (ESPIsPlausibleObject(m20) || ESPIsPlausibleObject(m28)) {
-                ESP_LOG_INFO(@"[DUMP] MatchGame+0x%llx = 0x%llx (+0x20=0x%llx +0x28=0x%llx)",
+                ESP_LOG_INFO(@"[DUMP] MatchGame+0x%llx = 0x%llx (+0x20=0x%llx +0x28=0x%llx) %s",
                     (unsigned long long)o, (unsigned long long)v,
-                    (unsigned long long)m20, (unsigned long long)m28);
+                    (unsigned long long)m20, (unsigned long long)m28,
+                    camCand ? [NSString stringWithFormat:@"*** CAMERA FOUND @0x%llx (matrix valid)", (unsigned long long)camCand] : @"");
             }
         }
         ESP_LOG_INFO(@"[DUMP] --- CameraMgr 0x%llx ---", (unsigned long long)s.camMgr);

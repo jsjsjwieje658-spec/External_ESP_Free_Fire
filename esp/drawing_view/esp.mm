@@ -208,6 +208,9 @@ uint64_t Moudule_Base = -1;
     if (!isVaildPtr(listObj) || ReadAddr<int>(listObj + 0x18) == 0) {
         listObj = ReadAddr<uint64_t>(match + 0x160);
     }
+    if (!isVaildPtr(listObj) || ReadAddr<int>(listObj + 0x18) == 0) {
+        listObj = ReadAddr<uint64_t>(match + 0x570); // DNCDEEJNHIA List<Player> (dump.cs JMAGGLCNGIG)
+    }
     if (!isVaildPtr(listObj)) return;
     uint64_t tValue = ReadAddr<uint64_t>(listObj + 0x10); // _items array
     if (!isVaildPtr(tValue)) return;
