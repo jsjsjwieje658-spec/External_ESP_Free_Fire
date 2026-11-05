@@ -72,7 +72,7 @@ vm_map_offset_t GetGameModule_Base(char* GameProcessName) {
     kern_return_t kr = mach_vm_region_recurse(get_task, &vmoffset, &vmsize, &nesting_depth, (vm_region_recurse_info_t)&vbr, &vbrcount);
     ESP_LOG_DEBUG(@"[MEM] mach_vm_region_recurse -> kr=%d (%s) base=0x%llx size=0x%llx name='%s'",
         kr, mach_error_string(kr), (unsigned long long)vmoffset,
-        (unsigned long long)vmsize, vbr.object_name ? vbr.object_name : "");
+        (unsigned long long)vmsize, ""); // iOS SDK: no object_name in submap_info
     if (kr == KERN_SUCCESS) {
         ESP_LOG_INFO(@"[MEM] module base=0x%llx (first region) pid=%d", (unsigned long long)vmoffset, pid);
         return vmoffset;
