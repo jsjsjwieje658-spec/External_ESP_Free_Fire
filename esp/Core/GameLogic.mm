@@ -50,13 +50,12 @@
 
 #pragma mark - Global RVA state
 
-uint64_t gGameFacadeGlobalRVA = 0x9985B70; // legacy default; healer updates on failure
+uint64_t gGameFacadeGlobalRVA = 0xB7A24F0; // 1.132.1 verified (scan log 2026-11-05, 2 boots stable)
 
 // Candidate RVAs to try when the primary fails. EMPTY for now — populate from
-// IDA/Ghidra once the 1.132.1 TypeInfo RVA is found (see AUTO_SCAN.md).
-// Example: { 0x9AABBCC, 0x11223344 }.
+// IDA/Ghidra once a newer build's RVA is found (see AUTO_SCAN.md).
 const uint64_t kGameFacadeCandidates[] = {
-    // PLACEHOLDER: add discovered RVAs here, newest first.
+    0xB7A24F0, // 1.132.1 (see above; first candidate)
 };
 const size_t kGameFacadeCandidatesCount = sizeof(kGameFacadeCandidates)/sizeof(uint64_t);
 

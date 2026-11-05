@@ -45,6 +45,11 @@ uint64_t Moudule_Base = -1;
                 ESPChainSnapshot snap = ESPProbeChain(Moudule_Base, gGameFacadeGlobalRVA);
                 ESP_LOG_INFO(@"[ESP] initial probe mainOk=%d listOk=%d camOk=%d players=%d",
                     snap.mainOk, snap.listOk, snap.cameraOk, snap.playerCount);
+                if (snap.mainOk && !snap.cameraOk && !snap.listOk) {
+                    // Chain resolves (MatchGame/Match/LocalPlayer valid) but camera+list null.
+                    // Verified 2026-11-05 log: camera 0x0 at +0x20/+0x28 and empty list in lobby.
+                    ESP_LOG_INFO(@"[ESP] probe mainOk but camera/list empty — likely LOBBY. Enter a match and ESP will start.");
+                }
                 if (!snap.mainOk) {
                     ESP_LOG_WARN(@"[ESP] initial probe FAILED — attempting heal (candidates + scan)...");
                     uint64_t healed = 0;
