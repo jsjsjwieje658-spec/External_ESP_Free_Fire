@@ -14,7 +14,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Theos + SDKs
+      - name: Setup Theos + SDKs + ldid
         run: |
           set -e
           git clone --recursive https://github.com/theos/theos.git Theos
@@ -26,6 +26,10 @@ jobs:
           ls -1 Theos/sdks/
           test -d Theos/sdks/iPhoneOS16.5.sdk || { echo "::error::iPhoneOS16.5.sdk missing in Theos/sdks (check TARGET in makefile)"; exit 1; }
           echo "SDK OK"
+          # Theos signs with `ldid` (procursus). Required for entitlements (task_for_pid-allow).
+          brew install ldid || brew reinstall ldid || true
+          echo "--- ldid ---"
+          which ldid && ldid --version || true
         env:
           DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
 
