@@ -64,28 +64,28 @@ void ESPScopedTimerEnd(ESPScopedTimer *timer);
 
 #define ESP_LOG_DEBUG(fmt, ...) \
     do { if (ESPGetLogLevel() <= ESPLogLevelDebug) \
-        ESPLog(ESPLogLevelDebug, _ESPONCE_TAG, @fmt, ##__VA_ARGS__); } while(0)
+        ESPLog(ESPLogLevelDebug, _ESPONCE_TAG, fmt, ##__VA_ARGS__); } while(0)
 
 #define ESP_LOG_INFO(fmt, ...) \
     do { if (ESPGetLogLevel() <= ESPLogLevelInfo) \
-        ESPLog(ESPLogLevelInfo, _ESPONCE_TAG, @fmt, ##__VA_ARGS__); } while(0)
+        ESPLog(ESPLogLevelInfo, _ESPONCE_TAG, fmt, ##__VA_ARGS__); } while(0)
 
 #define ESP_LOG_WARN(fmt, ...) \
     do { if (ESPGetLogLevel() <= ESPLogLevelWarn) \
-        ESPLog(ESPLogLevelWarn, _ESPONCE_TAG, @fmt, ##__VA_ARGS__); } while(0)
+        ESPLog(ESPLogLevelWarn, _ESPONCE_TAG, fmt, ##__VA_ARGS__); } while(0)
 
 #define ESP_LOG_ERROR(fmt, ...) \
     do { if (ESPGetLogLevel() <= ESPLogLevelError) \
-        ESPLog(ESPLogLevelError, _ESPONCE_TAG, @fmt, ##__VA_ARGS__); } while(0)
+        ESPLog(ESPLogLevelError, _ESPONCE_TAG, fmt, ##__VA_ARGS__); } while(0)
 
 // Throttled DEBUG for per-frame paths: logs every Nth invocation (N=30 ~2Hz).
 #define ESP_LOG_DEBUG_THROTTLED(fmt, ...) \
     do { static NSUInteger _n = 0; if ((++_n % 30) == 0 && ESPGetLogLevel() <= ESPLogLevelDebug) \
-        ESPLog(ESPLogLevelDebug, _ESPONCE_TAG, @fmt, ##__VA_ARGS__); } while(0)
+        ESPLog(ESPLogLevelDebug, _ESPONCE_TAG, fmt, ##__VA_ARGS__); } while(0)
 
 // One-shot INFO (first N calls) for init paths.
 #define ESP_LOG_INFO_ONCE(fmt, ...) \
     do { static NSUInteger _n = 0; if (_n++ < 5) \
-        ESPLog(ESPLogLevelInfo, _ESPONCE_TAG, @fmt, ##__VA_ARGS__); } while(0)
+        ESPLog(ESPLogLevelInfo, _ESPONCE_TAG, fmt, ##__VA_ARGS__); } while(0)
 
 #endif

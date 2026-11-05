@@ -9,6 +9,7 @@
 #include <stddef.h>
 #include <vector>
 #include <string>
+#include <mach/mach.h> // task_t
 
 // NOTE: NOT extern "C" — std::vector in signature.
 bool ESParsePattern(const char *pattern, std::vector<uint8_t> *bytes, std::vector<bool> *wild);

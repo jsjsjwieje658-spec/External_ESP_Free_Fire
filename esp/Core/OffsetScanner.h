@@ -7,6 +7,7 @@
 #define OffsetScanner_h
 
 #include <stdint.h>
+#include <stddef.h>
 #include <vector>
 
 #ifdef __cplusplus
